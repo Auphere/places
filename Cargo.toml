@@ -1,0 +1,59 @@
+[package]
+name = "auphere-places"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Web Framework
+actix-web = "4.4"
+actix-rt = "2.9"
+tokio = { version = "1.35", features = ["full"] }
+
+# Database & Connection Pooling
+sqlx = { version = "0.7", features = [
+    "postgres",
+    "runtime-tokio-native-tls",
+    "macros",
+    "uuid",
+    "chrono",
+    "json"
+] }
+postgres = "0.19"
+
+# Serialization/Deserialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Identifiers
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# Date & Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Configuration Management
+dotenv = "0.15"
+
+# Logging
+env_logger = "0.11"
+log = "0.4"
+
+# Error Handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Input Validation
+validator = { version = "0.16", features = ["derive"] }
+
+# Geographic Types
+geo-types = "0.7"
+geojson = "0.24"
+
+# HTTP Client (for external APIs)
+reqwest = { version = "0.11", features = ["json"] }
+
+# Rate Limiting
+governor = "0.6"
+
+[dev-dependencies]
+tokio-test = "0.4"
+

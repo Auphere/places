@@ -1,0 +1,14 @@
+/Users/lmatos/Workspace/auphere/auphere-places/target/release/deps/thiserror-4fef035828e1d959.d: /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/lib.rs /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/aserror.rs /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/display.rs /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/var.rs /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/private.rs /Users/lmatos/Workspace/auphere/auphere-places/target/release/build/thiserror-2208294d3901ba2a/out/private.rs
+
+/Users/lmatos/Workspace/auphere/auphere-places/target/release/deps/libthiserror-4fef035828e1d959.rlib: /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/lib.rs /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/aserror.rs /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/display.rs /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/var.rs /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/private.rs /Users/lmatos/Workspace/auphere/auphere-places/target/release/build/thiserror-2208294d3901ba2a/out/private.rs
+
+/Users/lmatos/Workspace/auphere/auphere-places/target/release/deps/libthiserror-4fef035828e1d959.rmeta: /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/lib.rs /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/aserror.rs /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/display.rs /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/var.rs /Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/private.rs /Users/lmatos/Workspace/auphere/auphere-places/target/release/build/thiserror-2208294d3901ba2a/out/private.rs
+
+/Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/lib.rs:
+/Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/aserror.rs:
+/Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/display.rs:
+/Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/var.rs:
+/Users/lmatos/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/private.rs:
+/Users/lmatos/Workspace/auphere/auphere-places/target/release/build/thiserror-2208294d3901ba2a/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/lmatos/Workspace/auphere/auphere-places/target/release/build/thiserror-2208294d3901ba2a/out
