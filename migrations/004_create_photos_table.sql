@@ -3,7 +3,7 @@
 -- DOCUMENTATION: Creates table for storing place photos from multiple sources
 -- PURPOSE: Store photo URLs and metadata from Google Places, Yelp, Instagram, etc.
 
-CREATE TABLE place_photos (
+CREATE TABLE IF NOT EXISTS place_photos (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     place_id UUID NOT NULL REFERENCES places(id) ON DELETE CASCADE,
     
@@ -38,8 +38,8 @@ CREATE TABLE place_photos (
 COMMENT ON TABLE place_photos IS 'Stores photos from Google Places, Yelp, Instagram, and other sources';
 
 -- Indexes
-CREATE INDEX idx_photos_place_id ON place_photos(place_id);
-CREATE INDEX idx_photos_source ON place_photos(source);
-CREATE INDEX idx_photos_is_primary ON place_photos(is_primary) WHERE is_primary = TRUE;
-CREATE INDEX idx_photos_display_order ON place_photos(place_id, display_order);
+CREATE INDEX IF NOT EXISTS idx_photos_place_id ON place_photos(place_id);
+CREATE INDEX IF NOT EXISTS idx_photos_source ON place_photos(source);
+CREATE INDEX IF NOT EXISTS idx_photos_is_primary ON place_photos(is_primary) WHERE is_primary = TRUE;
+CREATE INDEX IF NOT EXISTS idx_photos_display_order ON place_photos(place_id, display_order);
 

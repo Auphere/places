@@ -4,7 +4,7 @@
 -- PURPOSE: Maintains historical data, multi-source reviews, and B2B analytics
 
 -- Audit Table: Track all changes to places
-CREATE TABLE places_audit (
+CREATE TABLE IF NOT EXISTS places_audit (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     place_id UUID NOT NULL REFERENCES places(id) ON DELETE CASCADE,
     
@@ -23,13 +23,13 @@ CREATE TABLE places_audit (
 COMMENT ON TABLE places_audit IS 'Immutable audit log for all place modifications';
 
 -- Audit indexes
-CREATE INDEX idx_audit_place_id ON places_audit(place_id);
-CREATE INDEX idx_audit_changed_at ON places_audit(changed_at DESC);
-CREATE INDEX idx_audit_action ON places_audit(action);
+CREATE INDEX IF NOT EXISTS idx_audit_place_id ON places_audit(place_id);
+CREATE INDEX IF NOT EXISTS idx_audit_changed_at ON places_audit(changed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON places_audit(action);
 
 
 -- Reviews Table: Aggregated from multiple sources
-CREATE TABLE place_reviews (
+CREATE TABLE IF NOT EXISTS place_reviews (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     place_id UUID NOT NULL REFERENCES places(id) ON DELETE CASCADE,
     
@@ -71,15 +71,15 @@ CREATE TABLE place_reviews (
 COMMENT ON TABLE place_reviews IS 'Stores reviews from Google, Trustpilot, Yelp, etc.';
 
 -- Review indexes
-CREATE INDEX idx_reviews_place_id ON place_reviews(place_id);
-CREATE INDEX idx_reviews_source ON place_reviews(source);
-CREATE INDEX idx_reviews_rating ON place_reviews(rating DESC);
-CREATE INDEX idx_reviews_posted_at ON place_reviews(posted_at DESC);
-CREATE INDEX idx_reviews_sentiment ON place_reviews(sentiment);
+CREATE INDEX IF NOT EXISTS idx_reviews_place_id ON place_reviews(place_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_source ON place_reviews(source);
+CREATE INDEX IF NOT EXISTS idx_reviews_rating ON place_reviews(rating DESC);
+CREATE INDEX IF NOT EXISTS idx_reviews_posted_at ON place_reviews(posted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reviews_sentiment ON place_reviews(sentiment);
 
 
 -- Metrics Table: B2B analytics for place owners
-CREATE TABLE place_metrics (
+CREATE TABLE IF NOT EXISTS place_metrics (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     place_id UUID NOT NULL REFERENCES places(id) ON DELETE CASCADE,
     
@@ -117,12 +117,12 @@ CREATE TABLE place_metrics (
 COMMENT ON TABLE place_metrics IS 'Daily/hourly metrics for dashboard and analytics';
 
 -- Metrics indexes
-CREATE INDEX idx_metrics_place_id ON place_metrics(place_id, period_date DESC);
-CREATE INDEX idx_metrics_period ON place_metrics(period_date DESC);
+CREATE INDEX IF NOT EXISTS idx_metrics_place_id ON place_metrics(place_id, period_date DESC);
+CREATE INDEX IF NOT EXISTS idx_metrics_period ON place_metrics(period_date DESC);
 
 
 -- Data Sync Log: Track Google Places and external source synchronization
-CREATE TABLE data_sync_log (
+CREATE TABLE IF NOT EXISTS data_sync_log (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     
     -- Sync Identification
@@ -165,9 +165,9 @@ CREATE TABLE data_sync_log (
 COMMENT ON TABLE data_sync_log IS 'Audit trail for all data synchronization operations';
 
 -- Sync log indexes
-CREATE INDEX idx_sync_log_source ON data_sync_log(source);
-CREATE INDEX idx_sync_log_status ON data_sync_log(status);
-CREATE INDEX idx_sync_log_started_at ON data_sync_log(started_at DESC);
-CREATE INDEX idx_sync_log_completed ON data_sync_log(completed_at DESC)
+CREATE INDEX IF NOT EXISTS idx_sync_log_source ON data_sync_log(source);
+CREATE INDEX IF NOT EXISTS idx_sync_log_status ON data_sync_log(status);
+CREATE INDEX IF NOT EXISTS idx_sync_log_started_at ON data_sync_log(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sync_log_completed ON data_sync_log(completed_at DESC)
     WHERE status = 'completed';
 

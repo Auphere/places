@@ -21,6 +21,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Attach audit trigger to places table
+DROP TRIGGER IF EXISTS trg_audit_places ON places;
 CREATE TRIGGER trg_audit_places
 AFTER INSERT OR UPDATE OR DELETE ON places
 FOR EACH ROW
@@ -35,6 +36,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_update_reviews_timestamp ON place_reviews;
 CREATE TRIGGER trg_update_reviews_timestamp
 BEFORE UPDATE ON place_reviews
 FOR EACH ROW
