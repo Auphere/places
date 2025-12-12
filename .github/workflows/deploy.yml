@@ -146,7 +146,8 @@ jobs:
                 "ImageIdentifier": "${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest",
                 "ImageConfiguration": {
                   "Port": "8002"
-                }
+                },
+                "ImageRepositoryType": "ECR"
               }
             }' \
             --region ${{ env.AWS_REGION }}
