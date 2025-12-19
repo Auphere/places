@@ -2,9 +2,10 @@
 // DOCUMENTATION: HTTP handlers for place operations
 // PURPOSE: Parse requests, call services, return responses
 
+use crate::config::Config;
 use crate::errors::PlacesError;
 use crate::models::{CreatePlaceRequest, SearchQuery, UpdatePlaceRequest};
-use crate::services::PlaceService;
+use crate::services::{PlaceService, GooglePlacesClient};
 use actix_web::{web, HttpResponse, Responder};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -57,12 +58,22 @@ pub async fn get_place(
 }
 
 /// GET /places/search
-/// Search places with filters
+/// Search places with filters (from Google Places API)
 pub async fn search_places(
     pool: web::Data<PgPool>,
+    config: web::Data<Config>,
     query: web::Query<SearchQuery>,
 ) -> Result<impl Responder, PlacesError> {
-    let result = PlaceService::search_places(pool.get_ref(), query.into_inner()).await?;
+    // Check if Google Places API key is configured
+    if config.google_places_api_key.is_empty() {
+        // Fallback to database search if API key not configured
+        let result = PlaceService::search_places(pool.get_ref(), query.into_inner()).await?;
+        return Ok(HttpResponse::Ok().json(result));
+    }
+
+    // Use Google Places API directly
+    let google_client = GooglePlacesClient::new(config.google_places_api_key.clone());
+    let result = PlaceService::search_places_from_google(&google_client, query.into_inner()).await?;
     Ok(HttpResponse::Ok().json(result))
 }
 

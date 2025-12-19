@@ -382,6 +382,121 @@ pub struct SearchResponse {
     pub has_more: bool,
 }
 
+/// Frontend-compatible place response
+/// DOCUMENTATION: Response format expected by the frontend
+#[derive(Debug, Clone, Serialize)]
+pub struct FrontendPlaceResponse {
+    /// Google Place ID (used as identifier)
+    pub place_id: String,
+    
+    /// Place name
+    pub name: String,
+    
+    /// Full formatted address
+    pub formatted_address: Option<String>,
+    
+    /// Short vicinity address
+    pub vicinity: Option<String>,
+    
+    /// Geographic coordinates
+    pub latitude: f64,
+    pub longitude: f64,
+    
+    /// Place types array
+    pub types: Vec<String>,
+    
+    /// Rating (0-5)
+    pub rating: Option<f32>,
+    
+    /// Total number of ratings
+    pub user_ratings_total: Option<i32>,
+    
+    /// Price level (0-4)
+    pub price_level: Option<i32>,
+    
+    /// Phone number
+    pub phone_number: Option<String>,
+    
+    /// Website URL
+    pub website: Option<String>,
+    
+    /// Opening hours metadata
+    pub opening_hours: Option<Value>,
+    
+    /// Is currently open
+    pub is_open: Option<bool>,
+    
+    /// Distance in kilometers (if search had coordinates)
+    pub distance_km: Option<f64>,
+    
+    /// Custom attributes for frontend
+    pub custom_attributes: FrontendCustomAttributes,
+}
+
+/// Custom attributes for frontend
+#[derive(Debug, Clone, Serialize)]
+pub struct FrontendCustomAttributes {
+    /// City name
+    pub city: Option<String>,
+    
+    /// District/neighborhood
+    pub district: Option<String>,
+    
+    /// Primary photo URL
+    pub primary_photo_url: Option<String>,
+    
+    /// Primary photo thumbnail URL
+    pub primary_photo_thumbnail_url: Option<String>,
+    
+    /// Google Place ID
+    pub google_place_id: String,
+    
+    /// Array of photos
+    pub photos: Vec<FrontendPhotoResponse>,
+    
+    /// Array of reviews
+    pub reviews: Vec<FrontendReviewResponse>,
+}
+
+/// Frontend photo response
+#[derive(Debug, Clone, Serialize)]
+pub struct FrontendPhotoResponse {
+    pub photo_url: String,
+    pub thumbnail_url: Option<String>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub attribution: Option<String>,
+}
+
+/// Frontend review response
+#[derive(Debug, Clone, Serialize)]
+pub struct FrontendReviewResponse {
+    pub author: Option<String>,
+    pub rating: Option<i32>,
+    pub text: Option<String>,
+    pub relative_time_description: Option<String>,
+}
+
+/// Frontend search response
+/// DOCUMENTATION: Response format for /places/search endpoint
+#[derive(Debug, Serialize)]
+pub struct FrontendSearchResponse {
+    /// Array of places
+    pub places: Vec<FrontendPlaceResponse>,
+    
+    /// Total number of results
+    pub total: i64,
+    
+    /// Current page
+    pub page: i64,
+    
+    /// Results per page
+    pub per_page: i64,
+    
+    /// Total pages
+    pub total_pages: i64,
+}
+
 impl Place {
     /// Convert Place to PlaceResponse for API
     /// DOCUMENTATION: Maps database model to API response DTO

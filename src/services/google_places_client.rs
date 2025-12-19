@@ -274,6 +274,35 @@ impl GooglePlacesClient {
         }
     }
 
+    /// Get photo URL from photo reference
+    /// DOCUMENTATION: Converts Google photo_reference to actual photo URL
+    ///
+    /// # Arguments
+    /// * `photo_reference` - Photo reference from Google Places API
+    /// * `max_width` - Maximum width in pixels (default 800)
+    ///
+    /// # Returns
+    /// Photo URL that can be used directly in img tags
+    pub fn get_photo_url(&self, photo_reference: &str, max_width: Option<i32>) -> String {
+        let width = max_width.unwrap_or(800);
+        format!(
+            "{}/photo?maxwidth={}&photoreference={}&key={}",
+            self.base_url, width, photo_reference, self.api_key
+        )
+    }
+
+    /// Get thumbnail photo URL from photo reference
+    /// DOCUMENTATION: Converts Google photo_reference to thumbnail URL (smaller size)
+    ///
+    /// # Arguments
+    /// * `photo_reference` - Photo reference from Google Places API
+    ///
+    /// # Returns
+    /// Thumbnail photo URL (400px width)
+    pub fn get_photo_thumbnail_url(&self, photo_reference: &str) -> String {
+        self.get_photo_url(photo_reference, Some(400))
+    }
+
     /// Get detailed information about a specific place
     /// DOCUMENTATION: Retrieves detailed place information by place_id
     ///
@@ -281,7 +310,7 @@ impl GooglePlacesClient {
     /// * `place_id` - Google Place ID
     ///
     /// # Returns
-    /// Detailed place information (not yet implemented - returns error)
+    /// Detailed place information including photos and reviews
     pub async fn get_place_details(&self, place_id: &str) -> Result<GooglePlace, PlacesError> {
         let url = format!("{}/details/json", self.base_url);
 
