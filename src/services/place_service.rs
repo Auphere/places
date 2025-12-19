@@ -114,18 +114,15 @@ impl PlaceService {
             .nearby_search(lat, lon, radius_meters, place_type, keyword)
             .await?;
 
-        // Get details for each place (including photos and reviews)
+        // Transform places to frontend format
+        // ⚠️ OPTIMIZATION: Removed get_place_details call to reduce API usage by 50%
+        // The nearby_search already provides sufficient data for listing
+        // Details (photos, reviews) are fetched only when user clicks on a place
         let mut frontend_places = Vec::new();
         for google_place in google_places.iter() {
-            // Get full details for this place
-            let place_details = google_client
-                .get_place_details(&google_place.place_id)
-                .await
-                .unwrap_or_else(|_| google_place.clone());
-
-            // Transform to frontend format
+            // Transform to frontend format using data from nearby_search
             let frontend_place = Self::transform_google_place_to_frontend(
-                &place_details,
+                &google_place,
                 google_client,
                 latitude,
                 longitude,

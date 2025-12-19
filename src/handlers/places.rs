@@ -5,9 +5,10 @@
 use crate::config::Config;
 use crate::errors::PlacesError;
 use crate::models::{CreatePlaceRequest, SearchQuery, UpdatePlaceRequest};
-use crate::services::{PlaceService, GooglePlacesClient};
+use crate::services::{PlaceService, GooglePlacesClient, PlacesCache};
 use actix_web::{web, HttpResponse, Responder};
 use sqlx::PgPool;
+use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
@@ -58,10 +59,11 @@ pub async fn get_place(
 }
 
 /// GET /places/search
-/// Search places with filters (from Google Places API)
+/// Search places with filters (from Google Places API with caching)
 pub async fn search_places(
     pool: web::Data<PgPool>,
     config: web::Data<Config>,
+    cache: web::Data<Arc<PlacesCache>>,
     query: web::Query<SearchQuery>,
 ) -> Result<impl Responder, PlacesError> {
     // Check if Google Places API key is configured
@@ -71,8 +73,11 @@ pub async fn search_places(
         return Ok(HttpResponse::Ok().json(result));
     }
 
-    // Use Google Places API directly
-    let google_client = GooglePlacesClient::new(config.google_places_api_key.clone());
+    // Use Google Places API directly with shared cache
+    let google_client = GooglePlacesClient::new_with_cache(
+        config.google_places_api_key.clone(),
+        cache.get_ref().clone()
+    );
     let result = PlaceService::search_places_from_google(&google_client, query.into_inner()).await?;
     Ok(HttpResponse::Ok().json(result))
 }

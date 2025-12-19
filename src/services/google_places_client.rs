@@ -4,9 +4,11 @@
 
 use crate::errors::PlacesError;
 use crate::models::CreatePlaceRequest;
+use crate::services::PlacesCache;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Google Places API client
 /// DOCUMENTATION: Handles authentication and API calls to Google Places
@@ -17,6 +19,8 @@ pub struct GooglePlacesClient {
     api_key: String,
     /// Base URL for Google Places API
     base_url: String,
+    /// Cache for API responses
+    cache: Arc<PlacesCache>,
 }
 
 /// Response from Google Places Nearby Search
@@ -161,12 +165,24 @@ pub struct GooglePhoto {
 
 impl GooglePlacesClient {
     /// Create new Google Places API client
-    /// DOCUMENTATION: Initializes client with API key
+    /// DOCUMENTATION: Initializes client with API key and cache
     pub fn new(api_key: String) -> Self {
         Self {
             client: Client::new(),
             api_key,
             base_url: "https://maps.googleapis.com/maps/api/place".to_string(),
+            cache: Arc::new(PlacesCache::new(3600)), // 1 hour cache
+        }
+    }
+
+    /// Create new Google Places API client with custom cache
+    /// DOCUMENTATION: Initializes client with shared cache instance
+    pub fn new_with_cache(api_key: String, cache: Arc<PlacesCache>) -> Self {
+        Self {
+            client: Client::new(),
+            api_key,
+            base_url: "https://maps.googleapis.com/maps/api/place".to_string(),
+            cache,
         }
     }
 
@@ -177,7 +193,7 @@ impl GooglePlacesClient {
     }
 
     /// Perform nearby search for places
-    /// DOCUMENTATION: Searches for places near a geographic point
+    /// DOCUMENTATION: Searches for places near a geographic point with caching
     ///
     /// # Arguments
     /// * `latitude` - Center point latitude
@@ -196,6 +212,23 @@ impl GooglePlacesClient {
         place_type: Option<&str>,
         keyword: Option<&str>,
     ) -> Result<Vec<GooglePlace>, PlacesError> {
+        // Generate cache key
+        let cache_key = PlacesCache::generate_key(latitude, longitude, radius, place_type, keyword);
+        
+        // Check cache first
+        if let Some(cached_json) = self.cache.get(&cache_key).await {
+            match serde_json::from_str::<Vec<GooglePlace>>(&cached_json) {
+                Ok(places) => {
+                    log::info!("Returning {} cached places", places.len());
+                    return Ok(places);
+                }
+                Err(e) => {
+                    log::warn!("Failed to deserialize cached data: {}", e);
+                    // Continue to API call if cache is corrupted
+                }
+            }
+        }
+
         let url = format!("{}/nearbysearch/json", self.base_url);
 
         let mut params = HashMap::new();
@@ -212,7 +245,7 @@ impl GooglePlacesClient {
         }
 
         log::debug!(
-            "Google Places nearby search: lat={}, lng={}, radius={}",
+            "Google Places nearby search (API call): lat={}, lng={}, radius={}",
             latitude,
             longitude,
             radius
@@ -251,6 +284,12 @@ impl GooglePlacesClient {
                     "Google Places search returned {} results",
                     api_response.results.len()
                 );
+                
+                // Cache the results
+                if let Ok(json) = serde_json::to_string(&api_response.results) {
+                    self.cache.set(cache_key, json).await;
+                }
+                
                 Ok(api_response.results)
             }
             "OVER_QUERY_LIMIT" => {

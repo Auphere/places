@@ -13,6 +13,8 @@ use actix_web::{middleware::Logger, web, App, HttpServer};
 use config::Config;
 use dotenv::dotenv;
 use std::io;
+use std::sync::Arc;
+use services::{PlacesCache, start_cleanup_task};
 
 #[actix_web::main]
 async fn main() -> io::Result<()> {
@@ -55,15 +57,24 @@ async fn main() -> io::Result<()> {
         }
     };
 
-    // 5. Start HTTP server
+    // 5. Initialize cache for Google Places API responses
+    let cache = Arc::new(PlacesCache::new(3600)); // 1 hour TTL
+    log::info!("Initialized Places API cache (TTL: 1 hour)");
+    
+    // Start background cleanup task (runs every 5 minutes)
+    start_cleanup_task(cache.clone(), 300);
+    log::info!("Started cache cleanup task (interval: 5 minutes)");
+
+    // 6. Start HTTP server
     let server_addr = format!("{}:{}", config.server_address, config.server_port);
     let config_clone = config.clone();
 
     HttpServer::new(move || {
         App::new()
-            // Application state (database pool and config)
+            // Application state (database pool, config, and cache)
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(config_clone.clone()))
+            .app_data(web::Data::new(cache.clone()))
             // Middleware
             .wrap(Logger::default())
             .wrap(actix_web::middleware::Compress::default())

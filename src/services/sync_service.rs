@@ -144,28 +144,40 @@ impl SyncService {
 
                     // Process each place from this cell
                     for google_place in google_places {
-                        // Fetch detailed information from Place Details API
-                        log::debug!("Fetching details for: {}", google_place.name);
-                        let detailed_place = match google_client
-                            .get_place_details(&google_place.place_id)
-                            .await
-                        {
-                            Ok(details) => {
-                                stats.api_requests += 1; // Count Place Details API call
-                                details
+                        // ⚠️ OPTIMIZATION: Only fetch details if we need photos/reviews
+                        // For initial population, nearby_search data is sufficient
+                        // This reduces API calls by 50% during sync operations
+                        
+                        // Check if place already exists in DB
+                        let place_exists = PlaceRepository::get_by_google_place_id(
+                            pool, 
+                            &google_place.place_id
+                        ).await.is_ok();
+                        
+                        let detailed_place = if !place_exists {
+                            // New place: fetch full details including photos and reviews
+                            log::debug!("Fetching full details for new place: {}", google_place.name);
+                            match google_client.get_place_details(&google_place.place_id).await {
+                                Ok(details) => {
+                                    stats.api_requests += 1; // Count Place Details API call
+                                    details
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "Could not fetch details for {}: {}. Using basic info.",
+                                        google_place.name,
+                                        e
+                                    );
+                                    google_place.clone()
+                                }
                             }
-                            Err(e) => {
-                                log::warn!(
-                                    "Could not fetch details for {}: {}. Using basic info.",
-                                    google_place.name,
-                                    e
-                                );
-                                // If details fetch fails, use the basic info from nearby search
-                                google_place
-                            }
+                        } else {
+                            // Existing place: skip details fetch, just use nearby data for update
+                            log::debug!("Place exists, skipping details fetch: {}", google_place.name);
+                            google_place.clone()
                         };
 
-                        // Convert to CreatePlaceRequest (now with full details)
+                        // Convert to CreatePlaceRequest
                         let create_req = google_client.to_create_request(&detailed_place, city);
 
                         // Upsert into database

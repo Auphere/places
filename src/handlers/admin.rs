@@ -4,10 +4,11 @@
 
 use crate::config::Config;
 use crate::errors::PlacesError;
-use crate::services::{GooglePlacesClient, SyncService};
+use crate::services::{GooglePlacesClient, SyncService, PlacesCache};
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::sync::Arc;
 
 /// Request body for sync endpoint
 #[derive(Debug, Deserialize)]
@@ -41,6 +42,7 @@ pub struct SyncStatusResponse {
 pub async fn sync_city(
     pool: web::Data<PgPool>,
     config: web::Data<Config>,
+    cache: web::Data<Arc<PlacesCache>>,
     req: HttpRequest,
     path: web::Path<String>,
     body: web::Json<SyncRequest>,
@@ -52,14 +54,17 @@ pub async fn sync_city(
 
     log::info!("Admin sync requested for city: {}", city);
 
-    // Create Google Places client
+    // Create Google Places client with shared cache
     if config.google_places_api_key.is_empty() {
         return Err(PlacesError::InvalidInput(
             "Google Places API key not configured".to_string(),
         ));
     }
 
-    let google_client = GooglePlacesClient::new(config.google_places_api_key.clone());
+    let google_client = GooglePlacesClient::new_with_cache(
+        config.google_places_api_key.clone(),
+        cache.get_ref().clone()
+    );
 
     // Execute sync
     let stats = SyncService::sync_city(
@@ -365,6 +370,43 @@ pub async fn get_place_raw(
     })))
 }
 
+/// GET /admin/cache/stats
+/// Get cache statistics
+///
+/// DOCUMENTATION: Returns cache performance metrics
+/// Requires admin authentication via X-Admin-Token header
+pub async fn cache_stats(
+    config: web::Data<Config>,
+    cache: web::Data<Arc<PlacesCache>>,
+    req: HttpRequest,
+) -> Result<impl Responder, PlacesError> {
+    // Authenticate admin request
+    verify_admin_token(&req, &config)?;
+
+    let stats = cache.stats().await;
+    Ok(HttpResponse::Ok().json(stats))
+}
+
+/// POST /admin/cache/clear
+/// Clear all cache entries
+///
+/// DOCUMENTATION: Clears the entire cache
+/// Requires admin authentication via X-Admin-Token header
+pub async fn cache_clear(
+    config: web::Data<Config>,
+    cache: web::Data<Arc<PlacesCache>>,
+    req: HttpRequest,
+) -> Result<impl Responder, PlacesError> {
+    // Authenticate admin request
+    verify_admin_token(&req, &config)?;
+
+    cache.clear().await;
+    
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "message": "Cache cleared successfully"
+    })))
+}
+
 /// Configuration for admin routes
 pub fn config(cfg: &mut web::ServiceConfig) {
     cfg.service(
@@ -373,6 +415,8 @@ pub fn config(cfg: &mut web::ServiceConfig) {
             .route("/sync/batch", web::post().to(sync_cities_batch))
             .route("/sync/status", web::get().to(sync_status))
             .route("/stats", web::get().to(database_stats))
-            .route("/places/{id}/raw", web::get().to(get_place_raw)),
+            .route("/places/{id}/raw", web::get().to(get_place_raw))
+            .route("/cache/stats", web::get().to(cache_stats))
+            .route("/cache/clear", web::post().to(cache_clear)),
     );
 }
