@@ -107,6 +107,7 @@ MIGRATIONS=(
     "005_adjust_google_rating_type.sql"
     "006_enrich_places_fields.sql"
     "007_fix_review_rating_type.sql"
+    "008_extend_varchar_limits.sql"
 )
 
 print_info "Found ${#MIGRATIONS[@]} migration(s) to apply"
