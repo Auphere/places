@@ -121,13 +121,7 @@ impl PlacesCache {
         }
     }
 
-    /// Clear all cache entries
-    pub async fn clear(&self) {
-        let mut store = self.store.write().await;
-        let count = store.len();
-        store.clear();
-        log::info!("Cache cleared: {} entries removed", count);
-    }
+    // Note: no explicit clear() method needed in current production flow.
 }
 
 /// Cache statistics

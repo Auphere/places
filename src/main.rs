@@ -81,7 +81,6 @@ async fn main() -> io::Result<()> {
             // Routes
             .configure(handlers::health_config)
             .configure(handlers::places_config)
-            .configure(handlers::admin_config)
     })
     .bind(&server_addr)?
     .run()

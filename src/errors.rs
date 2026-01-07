@@ -27,12 +27,6 @@ pub enum PlacesError {
     #[error("Validation error: {0}")]
     ValidationError(String),
 
-    #[error("Unauthorized access")]
-    Unauthorized,
-
-    #[error("Forbidden access")]
-    Forbidden,
-
     #[error("Internal server error")]
     #[allow(dead_code)]
     InternalError,
@@ -58,8 +52,6 @@ impl ResponseError for PlacesError {
             PlacesError::DatabaseError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "DATABASE_ERROR"),
             PlacesError::InvalidInput(_) => (StatusCode::BAD_REQUEST, "INVALID_INPUT"),
             PlacesError::ValidationError(_) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR"),
-            PlacesError::Unauthorized => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED"),
-            PlacesError::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN"),
             PlacesError::InternalError => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
             PlacesError::ExternalApiError(_) => (StatusCode::BAD_GATEWAY, "EXTERNAL_API_ERROR"),
             PlacesError::RateLimitExceeded => {
@@ -88,8 +80,6 @@ impl ResponseError for PlacesError {
             PlacesError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PlacesError::InvalidInput(_) => StatusCode::BAD_REQUEST,
             PlacesError::ValidationError(_) => StatusCode::BAD_REQUEST,
-            PlacesError::Unauthorized => StatusCode::UNAUTHORIZED,
-            PlacesError::Forbidden => StatusCode::FORBIDDEN,
             PlacesError::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
             PlacesError::ExternalApiError(_) => StatusCode::BAD_GATEWAY,
             PlacesError::RateLimitExceeded => StatusCode::TOO_MANY_REQUESTS,

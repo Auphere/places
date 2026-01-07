@@ -4,8 +4,8 @@
 
 use crate::config::Config;
 use crate::errors::PlacesError;
-use crate::models::{CreatePlaceRequest, SearchQuery, UpdatePlaceRequest};
-use crate::services::{PlaceService, GooglePlacesClient, PlacesCache};
+use crate::models::{ClusterQuery, CreatePlaceRequest, SearchQuery, UpdatePlaceRequest};
+use crate::services::{PlaceService, GooglePlacesClient, PlacesCache, FoursquareClient};
 use actix_web::{web, HttpResponse, Responder};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -51,10 +51,37 @@ pub async fn upsert_place(
 /// Retrieve a place by ID (UUID or Google Place ID)
 pub async fn get_place(
     pool: web::Data<PgPool>,
+    config: web::Data<Config>,
+    cache: web::Data<Arc<PlacesCache>>,
     path: web::Path<String>,
 ) -> Result<impl Responder, PlacesError> {
     let identifier = path.into_inner();
-    let place = PlaceService::get_place_by_id_or_google_id(pool.get_ref(), &identifier).await?;
+
+    let google_client = if config.google_places_api_key.is_empty() {
+        None
+    } else {
+        Some(GooglePlacesClient::new_with_cache(
+            config.google_places_api_key.clone(),
+            cache.get_ref().clone(),
+        ))
+    };
+
+    let fsq_client = if config.foursquare_api_key.is_empty() {
+        None
+    } else {
+        Some(FoursquareClient::new(
+            config.foursquare_api_key.clone(),
+            cache.get_ref().clone(),
+        ))
+    };
+
+    let place = PlaceService::get_place_by_id_or_google_id(
+        pool.get_ref(),
+        &identifier,
+        google_client.as_ref(),
+        fsq_client.as_ref(),
+    )
+    .await?;
     Ok(HttpResponse::Ok().json(place))
 }
 
@@ -79,6 +106,16 @@ pub async fn search_places(
         cache.get_ref().clone()
     );
     let result = PlaceService::search_places_from_google(&google_client, query.into_inner()).await?;
+    Ok(HttpResponse::Ok().json(result))
+}
+
+/// GET /places/clusters
+/// Cluster places using PostGIS DBSCAN (DB-only).
+pub async fn cluster_places(
+    pool: web::Data<PgPool>,
+    query: web::Query<ClusterQuery>,
+) -> Result<impl Responder, PlacesError> {
+    let result = PlaceService::cluster_places(pool.get_ref(), query.into_inner()).await?;
     Ok(HttpResponse::Ok().json(result))
 }
 
@@ -111,6 +148,9 @@ pub fn config(cfg: &mut web::ServiceConfig) {
             .route("", web::post().to(create_place))
             .route("/upsert", web::post().to(upsert_place))
             .route("/search", web::get().to(search_places))
+            // Alias: nearby search (same handler, but callers typically pass lat/lon)
+            .route("/nearby", web::get().to(search_places))
+            .route("/clusters", web::get().to(cluster_places))
             .route("/{id}", web::get().to(get_place))
             .route("/{id}", web::put().to(update_place))
             .route("/{id}", web::delete().to(delete_place)),

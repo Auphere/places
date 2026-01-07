@@ -9,7 +9,7 @@ use sqlx::FromRow;
 use uuid::Uuid;
 use validator::Validate;
 
-use super::{PhotoResponse, ReviewResponse};
+use super::{PhotoResponse, ReviewResponse, TipResponse};
 
 /// Represents a complete place record from the database
 /// DOCUMENTATION: This struct maps directly to the places table in PostgreSQL
@@ -319,6 +319,8 @@ pub struct PlaceDetailResponse {
     pub place: PlaceResponse,
     pub photos: Vec<PhotoResponse>,
     pub reviews: Vec<ReviewResponse>,
+    #[serde(default)]
+    pub tips: Vec<TipResponse>,
 }
 
 /// Search query parameters
@@ -360,6 +362,66 @@ pub struct SearchQuery {
 
     /// Results per page (max 100)
     pub limit: Option<i64>,
+}
+
+/// Cluster query parameters
+/// DOCUMENTATION: Used for GET /places/clusters endpoint (DB-only; uses PostGIS clustering).
+#[derive(Debug, Deserialize)]
+pub struct ClusterQuery {
+    /// Filter by city (recommended for v1)
+    pub city: Option<String>,
+
+    /// Filter by place type
+    #[serde(rename = "type")]
+    pub type_: Option<String>,
+
+    /// Optional center latitude (to constrain clustering to a radius)
+    pub lat: Option<f64>,
+
+    /// Optional center longitude (to constrain clustering to a radius)
+    pub lon: Option<f64>,
+
+    /// Optional radius in kilometers (requires lat/lon)
+    pub radius_km: Option<f64>,
+
+    /// DBSCAN epsilon in meters (default 800m)
+    pub eps_m: Option<f64>,
+
+    /// DBSCAN minimum points to form a cluster (default 3)
+    pub min_points: Option<i64>,
+
+    /// Limit the number of places considered for clustering (default 1000)
+    pub limit_places: Option<i64>,
+
+    /// Limit number of clusters returned (default 20)
+    pub limit_clusters: Option<i64>,
+}
+
+/// Minimal place info returned inside clusters
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ClusterPlaceItem {
+    pub id: Uuid,
+    pub name: String,
+    pub google_place_id: Option<String>,
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub rating: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaceCluster {
+    pub cluster_id: i64,
+    pub centroid_latitude: f64,
+    pub centroid_longitude: f64,
+    pub places: Vec<ClusterPlaceItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClusterResponse {
+    pub clusters: Vec<PlaceCluster>,
+    pub unclustered: Vec<ClusterPlaceItem>,
 }
 
 /// Paginated search response

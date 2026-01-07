@@ -23,6 +23,10 @@ pub struct GooglePlacesClient {
     cache: Arc<PlacesCache>,
 }
 
+/// Response from Google Places Text Search
+/// DOCUMENTATION: Same schema shape as Nearby Search; kept as alias for clarity.
+pub type GooglePlacesTextSearchResponse = GooglePlacesResponse;
+
 /// Response from Google Places Nearby Search
 /// DOCUMENTATION: Parsed response from Google Places API
 #[derive(Debug, Deserialize, Serialize)]
@@ -164,11 +168,24 @@ pub struct GooglePhoto {
 }
 
 impl GooglePlacesClient {
+    fn build_http_client() -> Client {
+        // Avoid reading system proxy configuration (can panic in constrained/sandboxed environments).
+        Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_else(|e| {
+                log::warn!("Failed to build reqwest client with no_proxy: {}", e);
+                Client::builder()
+                    .build()
+                    .expect("Failed to build reqwest client")
+            })
+    }
+
     /// Create new Google Places API client
     /// DOCUMENTATION: Initializes client with API key and cache
     pub fn new(api_key: String) -> Self {
         Self {
-            client: Client::new(),
+            client: Self::build_http_client(),
             api_key,
             base_url: "https://maps.googleapis.com/maps/api/place".to_string(),
             cache: Arc::new(PlacesCache::new(3600)), // 1 hour cache
@@ -179,17 +196,11 @@ impl GooglePlacesClient {
     /// DOCUMENTATION: Initializes client with shared cache instance
     pub fn new_with_cache(api_key: String, cache: Arc<PlacesCache>) -> Self {
         Self {
-            client: Client::new(),
+            client: Self::build_http_client(),
             api_key,
             base_url: "https://maps.googleapis.com/maps/api/place".to_string(),
             cache,
         }
-    }
-
-    /// Get API key
-    /// DOCUMENTATION: Returns the Google Places API key
-    pub fn get_api_key(&self) -> &str {
-        &self.api_key
     }
 
     /// Perform nearby search for places
@@ -308,6 +319,111 @@ impl GooglePlacesClient {
                     .error_message
                     .unwrap_or_else(|| format!("Unknown status: {}", other));
                 log::error!("Google Places API unexpected status: {}", msg);
+                Err(PlacesError::ExternalApiError(msg))
+            }
+        }
+    }
+
+    /// Perform text search for places (supports city-based search without lat/lon)
+    /// DOCUMENTATION: Uses Google Places Text Search API with caching.
+    ///
+    /// This is used when the caller does not have coordinates (lat/lon).
+    /// Example query strings:
+    /// - "restaurants in Madrid"
+    /// - "bares con terraza Zaragoza"
+    pub async fn text_search(
+        &self,
+        query: &str,
+        location: Option<(f64, f64)>,
+        radius: Option<u32>,
+        place_type: Option<&str>,
+    ) -> Result<Vec<GooglePlace>, PlacesError> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Err(PlacesError::ValidationError(
+                "Query (q) is required for text search".to_string(),
+            ));
+        }
+
+        // Cache key: include query + optional location bias
+        let cache_key = format!(
+            "textsearch:{}:{}:{}:{}",
+            q.to_lowercase(),
+            location
+                .map(|(lat, lon)| format!("{}:{}", (lat * 1000.0).round() as i64, (lon * 1000.0).round() as i64))
+                .unwrap_or_else(|| "noloc".to_string()),
+            radius.unwrap_or(0),
+            place_type.unwrap_or("all"),
+        );
+
+        if let Some(cached_json) = self.cache.get(&cache_key).await {
+            match serde_json::from_str::<Vec<GooglePlace>>(&cached_json) {
+                Ok(places) => {
+                    log::info!("Returning {} cached places (text search)", places.len());
+                    return Ok(places);
+                }
+                Err(e) => {
+                    log::warn!("Failed to deserialize cached text search data: {}", e);
+                }
+            }
+        }
+
+        let url = format!("{}/textsearch/json", self.base_url);
+
+        let mut params = HashMap::new();
+        params.insert("query", q.to_string());
+        params.insert("key", self.api_key.clone());
+
+        if let Some((lat, lon)) = location {
+            params.insert("location", format!("{},{}", lat, lon));
+        }
+        if let Some(r) = radius {
+            params.insert("radius", r.to_string());
+        }
+        if let Some(t) = place_type {
+            params.insert("type", t.to_string());
+        }
+
+        log::debug!("Google Places text search (API call): query={}", q);
+
+        let response = self
+            .client
+            .get(&url)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|e| {
+                log::error!("Google Places Text Search request failed: {}", e);
+                PlacesError::ExternalApiError(format!("Request failed: {}", e))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            log::error!("Google Places Text Search API error {}: {}", status, body);
+            return Err(PlacesError::ExternalApiError(format!(
+                "API error {}: {}",
+                status, body
+            )));
+        }
+
+        let api_response: GooglePlacesTextSearchResponse = response.json().await.map_err(|e| {
+            log::error!("Failed to parse Google Places Text Search response: {}", e);
+            PlacesError::ExternalApiError(format!("Parse error: {}", e))
+        })?;
+
+        match api_response.status.as_str() {
+            "OK" | "ZERO_RESULTS" => {
+                if let Ok(json) = serde_json::to_string(&api_response.results) {
+                    self.cache.set(cache_key, json).await;
+                }
+                Ok(api_response.results)
+            }
+            "OVER_QUERY_LIMIT" => Err(PlacesError::RateLimitExceeded),
+            other => {
+                let msg = api_response
+                    .error_message
+                    .unwrap_or_else(|| format!("Text Search status: {}", other));
                 Err(PlacesError::ExternalApiError(msg))
             }
         }
@@ -637,47 +753,50 @@ impl GooglePlacesClient {
     /// Determine suitable_for tags based on place characteristics
     /// DOCUMENTATION: Derives suitable_for tags from types and price level
     fn determine_suitable_for(&self, types: &[String], price_level: Option<i32>) -> Vec<String> {
-        let mut suitable = Vec::new();
+        use std::collections::HashSet;
+        let mut suitable_set = HashSet::new();
 
         // Everyone can go to parks, museums, etc.
         if types.iter().any(|t| t == "park" || t == "museum" || t == "tourist_attraction") {
-            suitable.push("families".to_string());
-            suitable.push("solo".to_string());
-            suitable.push("groups".to_string());
+            suitable_set.insert("families".to_string());
+            suitable_set.insert("solo".to_string());
+            suitable_set.insert("groups".to_string());
         }
 
         // Bars and nightclubs
         if types.iter().any(|t| t == "bar" || t == "night_club" || t == "nightclub") {
-            suitable.push("groups".to_string());
-            suitable.push("couples".to_string());
+            suitable_set.insert("groups".to_string());
+            suitable_set.insert("couples".to_string());
         }
 
         // Cafes
         if types.iter().any(|t| t == "cafe") {
-            suitable.push("solo".to_string());
-            suitable.push("couples".to_string());
-            suitable.push("groups".to_string());
+            suitable_set.insert("solo".to_string());
+            suitable_set.insert("couples".to_string());
+            suitable_set.insert("groups".to_string());
         }
 
         // Restaurants
         if types.iter().any(|t| t == "restaurant" || t == "food") {
-            suitable.push("couples".to_string());
-            suitable.push("families".to_string());
-            suitable.push("groups".to_string());
+            suitable_set.insert("couples".to_string());
+            suitable_set.insert("families".to_string());
+            suitable_set.insert("groups".to_string());
             
             // Expensive restaurants more suitable for couples
             if let Some(level) = price_level {
                 if level >= 3 {
                     // Remove families for very expensive places
-                    suitable.retain(|s| s != "families");
+                    suitable_set.remove("families");
                 } else if level <= 1 {
                     // Cheap places good for students
-                    suitable.push("budget".to_string());
+                    suitable_set.insert("budget".to_string());
                 }
             }
         }
 
-        suitable.dedup();
+        let mut suitable: Vec<String> = suitable_set.into_iter().collect();
+        // Sort for consistent output
+        suitable.sort();
         suitable
     }
 }

@@ -187,7 +187,7 @@ impl PlaceRepository {
                 google_place_id, google_place_url, google_rating, google_rating_count, price_level,
                 main_categories, secondary_categories, cuisine_types,
                 opening_hours, is_open_now, business_status, suitable_for,
-                created_at, updated_at
+                created_at, updated_at, last_verified_at
             )
             VALUES (
                 $1, $2, $3,
@@ -196,7 +196,7 @@ impl PlaceRepository {
                 $12, $13, $14, $15, $16,
                 $17, $18, $19,
                 $20, $21, $22, $23,
-                NOW(), NOW()
+                NOW(), NOW(), NOW()
             )
             ON CONFLICT (google_place_id) DO NOTHING
             RETURNING id
@@ -263,6 +263,7 @@ impl PlaceRepository {
                 business_status = $21,
                 suitable_for = $22,
                 is_active = true,
+                last_verified_at = NOW(),
                 updated_at = NOW()
             WHERE google_place_id = $23
             RETURNING id
@@ -612,5 +613,163 @@ impl PlaceRepository {
         }
 
         Ok(count)
+    }
+
+    /// Cluster places using PostGIS DBSCAN.
+    /// DOCUMENTATION: DB-only endpoint support for "zones" clustering (token reduction upstream).
+    pub async fn cluster_places(
+        pool: &PgPool,
+        query: &ClusterQuery,
+    ) -> Result<ClusterResponse, PlacesError> {
+        let eps_m = query.eps_m.unwrap_or(800.0).max(50.0);
+        let min_points = query.min_points.unwrap_or(3).max(2);
+        let limit_places = query.limit_places.unwrap_or(1000).max(10).min(5000);
+        let limit_clusters = query.limit_clusters.unwrap_or(20).max(1).min(200);
+
+        // If radius_km is provided, require lat/lon.
+        if query.radius_km.is_some() && (query.lat.is_none() || query.lon.is_none()) {
+            return Err(PlacesError::ValidationError(
+                "radius_km requires lat and lon".to_string(),
+            ));
+        }
+
+        #[derive(Debug, FromRow)]
+        struct ClusterRow {
+            cluster_id: i64,
+            centroid_latitude: f64,
+            centroid_longitude: f64,
+            places: Value,
+        }
+
+        let clustered_rows: Vec<ClusterRow> = sqlx::query_as(
+            r#"
+            WITH base AS (
+                SELECT
+                    p.id,
+                    p.name,
+                    p.google_place_id,
+                    p.type,
+                    p.google_rating AS rating,
+                    ST_Y(p.location) AS latitude,
+                    ST_X(p.location) AS longitude,
+                    p.location,
+                    ST_ClusterDBSCAN(ST_Transform(p.location, 3857), $1, $2) OVER () AS cluster_id
+                FROM places p
+                WHERE p.is_active = true
+                  AND ($3::text IS NULL OR p.city = $3)
+                  AND ($4::text IS NULL OR p.type = $4)
+                  AND (
+                        $5::float8 IS NULL
+                        OR ($6::float8 IS NOT NULL AND $7::float8 IS NOT NULL
+                            AND ST_DWithin(
+                                p.location::geography,
+                                ST_SetSRID(ST_MakePoint($7, $6), 4326)::geography,
+                                ($5 * 1000.0)
+                            )
+                        )
+                  )
+                LIMIT $8
+            )
+            SELECT
+                cluster_id::bigint AS cluster_id,
+                ST_Y(ST_Centroid(ST_Collect(location))) AS centroid_latitude,
+                ST_X(ST_Centroid(ST_Collect(location))) AS centroid_longitude,
+                json_agg(
+                    json_build_object(
+                        'id', id,
+                        'name', name,
+                        'google_place_id', google_place_id,
+                        'type', type,
+                        'latitude', latitude,
+                        'longitude', longitude,
+                        'rating', rating
+                    )
+                    ORDER BY rating DESC NULLS LAST, name ASC
+                ) AS places
+            FROM base
+            WHERE cluster_id IS NOT NULL
+            GROUP BY cluster_id
+            ORDER BY COUNT(*) DESC
+            LIMIT $9
+            "#,
+        )
+        .bind(eps_m)
+        .bind(min_points)
+        .bind(query.city.as_deref())
+        .bind(query.type_.as_deref())
+        .bind(query.radius_km)
+        .bind(query.lat)
+        .bind(query.lon)
+        .bind(limit_places)
+        .bind(limit_clusters)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| PlacesError::DatabaseError(e.to_string()))?;
+
+        let mut clusters = Vec::new();
+        for row in clustered_rows {
+            let places: Vec<ClusterPlaceItem> = serde_json::from_value(row.places).map_err(|e| {
+                PlacesError::DatabaseError(format!("Failed to parse cluster places JSON: {}", e))
+            })?;
+            clusters.push(PlaceCluster {
+                cluster_id: row.cluster_id,
+                centroid_latitude: row.centroid_latitude,
+                centroid_longitude: row.centroid_longitude,
+                places,
+            });
+        }
+
+        // Unclustered places (same constraints)
+        let unclustered_places: Vec<ClusterPlaceItem> = sqlx::query_as(
+            r#"
+            WITH base AS (
+                SELECT
+                    p.id,
+                    p.name,
+                    p.google_place_id,
+                    p.type as type_,
+                    ST_Y(p.location) AS latitude,
+                    ST_X(p.location) AS longitude,
+                    p.google_rating AS rating,
+                    ST_ClusterDBSCAN(ST_Transform(p.location, 3857), $1, $2) OVER () AS cluster_id
+                FROM places p
+                WHERE p.is_active = true
+                  AND ($3::text IS NULL OR p.city = $3)
+                  AND ($4::text IS NULL OR p.type = $4)
+                  AND (
+                        $5::float8 IS NULL
+                        OR ($6::float8 IS NOT NULL AND $7::float8 IS NOT NULL
+                            AND ST_DWithin(
+                                p.location::geography,
+                                ST_SetSRID(ST_MakePoint($7, $6), 4326)::geography,
+                                ($5 * 1000.0)
+                            )
+                        )
+                  )
+                LIMIT $8
+            )
+            SELECT id, name, google_place_id, type_, latitude, longitude, rating
+            FROM base
+            WHERE cluster_id IS NULL
+            ORDER BY rating DESC NULLS LAST, name ASC
+            LIMIT 100
+            "#,
+        )
+        .bind(eps_m)
+        .bind(min_points)
+        .bind(query.city.as_deref())
+        .bind(query.type_.as_deref())
+        .bind(query.radius_km)
+        .bind(query.lat)
+        .bind(query.lon)
+        .bind(limit_places)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| PlacesError::DatabaseError(e.to_string()))?;
+
+        Ok(ClusterResponse {
+            clusters,
+            unclustered: unclustered_places,
+        })
     }
 }

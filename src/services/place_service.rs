@@ -2,17 +2,21 @@
 // DOCUMENTATION: Business logic for places
 // PURPOSE: Intermediary between handlers and repository, handles extra logic
 
-use crate::db::{PhotoRepository, PlaceRepository, ReviewRepository};
+use crate::db::{PhotoRepository, PlaceRepository, ReviewRepository, TipRepository};
 use crate::errors::PlacesError;
 use crate::models::{
-    CreatePlaceRequest, Place, PlaceDetailResponse, PlaceResponse, SearchQuery, SearchResponse,
+    ClusterQuery, ClusterResponse, CreatePlaceRequest, Place, PlaceDetailResponse, PlaceResponse, SearchQuery, SearchResponse,
     UpdatePlaceRequest, FrontendPlaceResponse, FrontendSearchResponse, FrontendCustomAttributes,
-    FrontendPhotoResponse, FrontendReviewResponse,
+    FrontendPhotoResponse, FrontendReviewResponse, CreateTipRequest,
 };
-use crate::services::GooglePlacesClient;
+use crate::services::{GooglePlacesClient, FoursquareClient};
 use crate::services::google_places_client::{GooglePlace, GooglePhoto, GoogleReview};
+use crate::models::{CreatePhotoRequest, CreateReviewRequest};
+use chrono::{TimeZone, Utc};
+use std::time::Duration;
 use sqlx::PgPool;
 use uuid::Uuid;
+use serde_json::Value;
 
 pub struct PlaceService;
 
@@ -27,40 +31,294 @@ impl PlaceService {
         Ok(place.to_response())
     }
 
-    /// Get a place by ID (UUID or Google Place ID)
+    /// Get a place by ID (UUID or Google Place ID) with optional on-demand Google enrichment.
+    ///
+    /// If `google_client` is provided and the record is stale (or missing photos/reviews),
+    /// it will fetch Google Place Details and persist the updated place + photos + reviews.
     pub async fn get_place_by_id_or_google_id(
         pool: &PgPool,
         identifier: &str,
+        google_client: Option<&GooglePlacesClient>,
+        fsq_client: Option<&FoursquareClient>,
     ) -> Result<PlaceDetailResponse, PlacesError> {
         // Try to parse as UUID first
-        let place = if let Ok(uuid) = Uuid::parse_str(identifier) {
+        let mut place = if let Ok(uuid) = Uuid::parse_str(identifier) {
             PlaceRepository::get_by_id(pool, uuid).await?
         } else {
-            // If not a UUID, treat as Google Place ID
-            PlaceRepository::get_by_google_place_id(pool, identifier).await?
+            // If not a UUID, treat as Google Place ID.
+            // If missing in DB, we can create it on-demand from Google Place Details.
+            match PlaceRepository::get_by_google_place_id(pool, identifier).await {
+                Ok(p) => p,
+                Err(PlacesError::NotFound(_)) => {
+                    let Some(client) = google_client else {
+                        return Err(PlacesError::NotFound(identifier.to_string()));
+                    };
+
+                    log::info!("Place not found in DB, fetching from Google Place Details: {}", identifier);
+                    let details = client.get_place_details(identifier).await?;
+                    let inferred_city = Self::extract_city_from_google_place(&details)
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    let create_req = client.to_create_request(&details, &inferred_city);
+                    let (created, _) = PlaceRepository::upsert_google_place(pool, &create_req).await?;
+                    created
+                }
+                Err(e) => return Err(e),
+            }
         };
         
-        let photos = PhotoRepository::get_photos_by_place(pool, &place.id, None).await?;
-        let reviews = ReviewRepository::get_reviews_by_place(pool, &place.id, None).await?;
+        let mut photos = PhotoRepository::get_photos_by_place(pool, &place.id, None).await?;
+        let mut reviews = ReviewRepository::get_reviews_by_place(pool, &place.id, None).await?;
+        let mut tips = TipRepository::get_tips_by_place(pool, &place.id, None).await?;
+
+        // On-demand enrichment from Google (SWR-lite): if missing data or stale, refresh now.
+        if let (Some(client), Some(ref google_place_id)) = (google_client, place.google_place_id.clone()) {
+            let is_stale = place
+                .last_verified_at
+                .map(|ts| Utc::now().signed_duration_since(ts).to_std().unwrap_or(Duration::from_secs(0)) > Duration::from_secs(7 * 24 * 3600))
+                .unwrap_or(true);
+            let is_missing_assets = photos.is_empty() || reviews.is_empty();
+
+            if is_stale || is_missing_assets {
+                log::info!(
+                    "Refreshing place from Google (stale={}, missing_assets={}): {}",
+                    is_stale,
+                    is_missing_assets,
+                    google_place_id
+                );
+                if let Ok(details) = client.get_place_details(google_place_id).await {
+                    // Upsert place core fields
+                    let create_req = client.to_create_request(&details, &place.city);
+                    let (updated_place, _) = PlaceRepository::upsert_google_place(pool, &create_req).await?;
+                    place = updated_place;
+
+                    // Persist reviews/photos (best-effort)
+                    Self::persist_google_reviews(pool, &place.id, &details).await;
+                    Self::persist_google_photos(pool, &place.id, &details, client).await;
+
+                    // Reload place to get primary_photo_url from LEFT JOIN LATERAL
+                    place = PlaceRepository::get_by_id(pool, place.id).await?;
+                    
+                    // Reload assets after refresh
+                    photos = PhotoRepository::get_photos_by_place(pool, &place.id, None).await?;
+                    reviews = ReviewRepository::get_reviews_by_place(pool, &place.id, None).await?;
+                    tips = TipRepository::get_tips_by_place(pool, &place.id, None).await?;
+                }
+            }
+        }
+
+        // Optional Foursquare enrichment (photos + mapping stored in tags)
+        if let Some(fsq_client) = fsq_client {
+            if let Ok(Some(updated_tags)) = Self::enrich_place_with_foursquare(
+                pool,
+                &place.id,
+                &place.name,
+                place.latitude,
+                place.longitude,
+                place.tags.clone(),
+                fsq_client,
+            )
+            .await
+            {
+                // Only write if tags changed (avoid extra writes)
+                let should_update = match &place.tags {
+                    Some(existing) => existing != &updated_tags,
+                    None => true,
+                };
+                if should_update {
+                    let updated_place = PlaceRepository::update_place(
+                        pool,
+                        place.id,
+                        &UpdatePlaceRequest {
+                            name: None,
+                            description: None,
+                            tags: Some(updated_tags),
+                            vibe_descriptor: None,
+                            opening_hours: None,
+                            google_rating: None,
+                            business_status: None,
+                        },
+                    )
+                    .await?;
+                    place = updated_place;
+                }
+
+                // Reload place to get updated primary_photo_url (may include Foursquare photos)
+                place = PlaceRepository::get_by_id(pool, place.id).await?;
+                
+                // Reload photos to include foursquare ones
+                photos = PhotoRepository::get_photos_by_place(pool, &place.id, None).await?;
+                tips = TipRepository::get_tips_by_place(pool, &place.id, None).await?;
+            }
+        }
 
         Ok(PlaceDetailResponse {
             place: place.to_response(),
             photos: photos.into_iter().map(|p| p.to_response()).collect(),
             reviews: reviews.into_iter().map(|r| r.to_response()).collect(),
+            tips: tips.into_iter().map(|t| t.to_response()).collect(),
         })
     }
 
-    /// Get a place by ID (UUID only)
-    pub async fn get_place(pool: &PgPool, id: Uuid) -> Result<PlaceDetailResponse, PlacesError> {
-        let place = PlaceRepository::get_by_id(pool, id).await?;
-        let photos = PhotoRepository::get_photos_by_place(pool, &place.id, None).await?;
-        let reviews = ReviewRepository::get_reviews_by_place(pool, &place.id, None).await?;
+    fn extract_city_from_google_place(google_place: &GooglePlace) -> Option<String> {
+        let components = google_place.address_components.as_ref()?;
+        for component in components {
+            if component
+                .types
+                .iter()
+                .any(|t| t == "locality" || t == "administrative_area_level_2")
+            {
+                return Some(component.long_name.clone());
+            }
+        }
+        None
+    }
 
-        Ok(PlaceDetailResponse {
-            place: place.to_response(),
-            photos: photos.into_iter().map(|p| p.to_response()).collect(),
-            reviews: reviews.into_iter().map(|r| r.to_response()).collect(),
-        })
+    /// Optional Foursquare enrichment (photos + basic metadata).
+    ///
+    /// We store `fsq_id` inside `places.tags.external_ids.fsq_id` to avoid a schema migration.
+    /// If you prefer a dedicated DB column for `fsq_id`, tell me and we’ll migrate it.
+    pub async fn enrich_place_with_foursquare(
+        pool: &PgPool,
+        place_id: &Uuid,
+        place_name: &str,
+        lat: f64,
+        lon: f64,
+        existing_tags: Option<Value>,
+        fsq_client: &FoursquareClient,
+    ) -> Result<Option<Value>, PlacesError> {
+        let mut tags = existing_tags.unwrap_or_else(|| serde_json::json!({}));
+
+        // Read existing fsq_id if already stored.
+        let existing_fsq_id = tags
+            .get("external_ids")
+            .and_then(|v| v.get("fsq_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let fsq_id = if let Some(id) = existing_fsq_id {
+            id
+        } else {
+            // Attempt to match near the coordinate.
+            let best = fsq_client.match_place(place_name, lat, lon, 200).await?;
+            let Some(best) = best else { return Ok(Some(tags)); };
+            let id = best.fsq_id;
+
+            // Persist mapping in tags (best-effort)
+            tags["external_ids"]["fsq_id"] = serde_json::Value::String(id.clone());
+            tags["external_ids"]["fsq_name"] = serde_json::Value::String(best.name);
+            if let Some(rating) = best.rating {
+                tags["foursquare"]["rating_0_10"] = serde_json::Value::Number(
+                    serde_json::Number::from_f64(rating as f64).unwrap_or_else(|| serde_json::Number::from(0)),
+                );
+            }
+            if let Some(popularity) = best.popularity {
+                tags["foursquare"]["popularity"] = serde_json::Value::Number(
+                    serde_json::Number::from_f64(popularity as f64).unwrap_or_else(|| serde_json::Number::from(0)),
+                );
+            }
+            id
+        };
+
+        // Fetch and persist photos (best-effort).
+        let photos = fsq_client.get_photos(&fsq_id, 10).await.unwrap_or_default();
+        for (idx, photo) in photos.iter().enumerate() {
+            let photo_url = FoursquareClient::photo_url(&photo.prefix, "800x800", &photo.suffix);
+            let thumbnail_url = Some(FoursquareClient::photo_url(&photo.prefix, "300x300", &photo.suffix));
+            let photo_req = CreatePhotoRequest {
+                place_id: *place_id,
+                source: "foursquare".to_string(),
+                source_photo_reference: Some(photo.id.clone()),
+                photo_url,
+                thumbnail_url,
+                width: photo.width,
+                height: photo.height,
+                attribution: Some("Foursquare".to_string()),
+                is_primary: Some(false),
+                display_order: Some(idx as i32),
+            };
+            if let Err(e) = PhotoRepository::create_photo(pool, &photo_req).await {
+                log::debug!("Failed to upsert foursquare photo (best-effort): {}", e);
+            }
+        }
+
+        // Fetch and persist tips (best-effort).
+        // Tips do not have rating → stored in place_tips.
+        let tips = fsq_client.get_tips(&fsq_id, 10).await.unwrap_or_default();
+        for tip in tips {
+            let like_count = tip
+                .agree_count
+                .unwrap_or(0)
+                .saturating_sub(tip.disagree_count.unwrap_or(0));
+            let posted_at = tip
+                .created_at
+                .as_deref()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+
+            let tip_req = CreateTipRequest {
+                place_id: *place_id,
+                source: "foursquare".to_string(),
+                source_id: Some(tip.id),
+                author: None,
+                text: tip.text,
+                posted_at,
+                like_count: Some(like_count),
+            };
+            if let Err(e) = TipRepository::create_tip(pool, &tip_req).await {
+                log::debug!("Failed to upsert foursquare tip (best-effort): {}", e);
+            }
+        }
+
+        Ok(Some(tags))
+    }
+
+    async fn persist_google_reviews(pool: &PgPool, place_id: &Uuid, details: &GooglePlace) {
+        let Some(ref reviews) = details.reviews else { return; };
+        for review in reviews {
+            let Some(rating) = review.rating else { continue; };
+            let review_req = CreateReviewRequest {
+                place_id: *place_id,
+                source: "google".to_string(),
+                source_id: Some(format!(
+                    "{}_{}",
+                    details.place_id,
+                    review.time.unwrap_or(0)
+                )),
+                author: review.author_name.clone(),
+                rating: rating as f32,
+                text: review.text.clone(),
+                posted_at: review
+                    .time
+                    .and_then(|t| Utc.timestamp_opt(t, 0).single())
+                    .unwrap_or_else(|| Utc::now()),
+                is_verified: Some(false),
+                has_photo: review.profile_photo_url.is_some().then_some(true),
+            };
+            if let Err(e) = ReviewRepository::create_review(pool, &review_req).await {
+                log::debug!("Failed to upsert google review (best-effort): {}", e);
+            }
+        }
+    }
+
+    async fn persist_google_photos(pool: &PgPool, place_id: &Uuid, details: &GooglePlace, client: &GooglePlacesClient) {
+        let Some(ref photos) = details.photos else { return; };
+        for (idx, photo) in photos.iter().enumerate() {
+            let photo_req = CreatePhotoRequest {
+                place_id: *place_id,
+                source: "google".to_string(),
+                source_photo_reference: Some(photo.photo_reference.clone()),
+                photo_url: client.get_photo_url(&photo.photo_reference, Some(800)),
+                thumbnail_url: Some(client.get_photo_thumbnail_url(&photo.photo_reference)),
+                width: photo.width,
+                height: photo.height,
+                attribution: photo.html_attributions.as_ref().and_then(|attrs| attrs.first().cloned()),
+                is_primary: Some(idx == 0),
+                display_order: Some(idx as i32),
+            };
+            if let Err(e) = PhotoRepository::create_photo(pool, &photo_req).await {
+                log::debug!("Failed to upsert google photo (best-effort): {}", e);
+            }
+        }
     }
 
     /// Search for places (from database)
@@ -84,6 +342,11 @@ impl PlaceService {
         })
     }
 
+    /// Cluster places using DBSCAN (PostGIS).
+    pub async fn cluster_places(pool: &PgPool, query: ClusterQuery) -> Result<ClusterResponse, PlacesError> {
+        PlaceRepository::cluster_places(pool, &query).await
+    }
+
     /// Search places directly from Google Places API
     /// DOCUMENTATION: Fetches places from Google Places API and transforms to frontend format
     pub async fn search_places_from_google(
@@ -95,24 +358,41 @@ impl PlaceService {
         let longitude = query.lon;
         let radius_meters = query.radius_km.map(|km| (km * 1000.0) as u32).unwrap_or(5000);
         let place_type = query.type_.as_deref();
-        let keyword = query.q.as_deref();
-        
-        // Validate that we have coordinates for nearby search
-        let (lat, lon) = match (latitude, longitude) {
-            (Some(lat), Some(lon)) => (lat, lon),
+        let keyword = query.q.as_deref().unwrap_or("").trim();
+
+        // If we have coordinates, use Nearby Search (best for proximity).
+        // Otherwise, fall back to Text Search using city + query.
+        let google_places = match (latitude, longitude) {
+            (Some(lat), Some(lon)) => {
+                google_client
+                    .nearby_search(lat, lon, radius_meters, place_type, if keyword.is_empty() { None } else { Some(keyword) })
+                    .await?
+            }
             _ => {
-                // If no coordinates, try to use city name for text search
-                // For now, return error - we need coordinates for nearby search
+                // Build a text query. Prefer: "{keyword} in {city}".
+                // If keyword is empty, we still allow city-only search (e.g., "restaurants in Madrid")
+                // by using place_type as a weak fallback.
+                let city = query.city.clone().unwrap_or_default();
+                let inferred = if !keyword.is_empty() {
+                    if city.is_empty() { keyword.to_string() } else { format!("{} in {}", keyword, city) }
+                } else if let Some(t) = place_type {
+                    if city.is_empty() { t.to_string() } else { format!("{} in {}", t, city) }
+                } else {
                 return Err(PlacesError::ValidationError(
-                    "Latitude and longitude are required for search".to_string()
-                ));
+                        "Provide either (lat & lon) or (q/city) for search".to_string(),
+                    ));
+                };
+
+                google_client
+                    .text_search(
+                        &inferred,
+                        None,
+                        Some(radius_meters),
+                        place_type,
+                    )
+                    .await?
             }
         };
-
-        // Perform nearby search
-        let google_places = google_client
-            .nearby_search(lat, lon, radius_meters, place_type, keyword)
-            .await?;
 
         // Transform places to frontend format
         // ⚠️ OPTIMIZATION: Removed get_place_details call to reduce API usage by 50%

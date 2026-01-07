@@ -108,6 +108,8 @@ MIGRATIONS=(
     "006_enrich_places_fields.sql"
     "007_fix_review_rating_type.sql"
     "008_extend_varchar_limits.sql"
+    "009_add_foursquare_source.sql"
+    "010_create_place_tips.sql"
 )
 
 print_info "Found ${#MIGRATIONS[@]} migration(s) to apply"
@@ -137,14 +139,8 @@ for migration in "${MIGRATIONS[@]}"; do
         print_warn "Attempting to show error details..."
         psql "$CONN_STRING" -f "$migration_path" 2>&1 | tail -20
         FAILED_COUNT=$((FAILED_COUNT + 1))
-        
-        # Ask if user wants to continue
-        read -p "Continue with remaining migrations? (y/n): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_warn "Migration process stopped by user."
-            break
-        fi
+        print_error "Stopping migration process due to failure."
+        break
     fi
     
     echo ""

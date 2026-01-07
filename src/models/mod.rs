@@ -5,7 +5,9 @@
 pub mod photo;
 pub mod place;
 pub mod review;
+pub mod tip;
 
 pub use photo::*;
 pub use place::*;
 pub use review::*;
+pub use tip::*;

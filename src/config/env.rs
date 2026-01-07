@@ -29,8 +29,8 @@ pub struct Config {
     /// Google Places API Key
     pub google_places_api_key: String,
 
-    /// Admin authentication token (for sensitive endpoints)
-    pub admin_token: String,
+    /// Foursquare Places API Key (optional)
+    pub foursquare_api_key: String,
 
     /// Maximum connections in database pool
     pub db_max_connections: u32,
@@ -66,7 +66,7 @@ impl Config {
             google_places_api_key: env::var("GOOGLE_PLACES_API_KEY")
                 .unwrap_or_else(|_| String::new()),
 
-            admin_token: env::var("ADMIN_TOKEN").unwrap_or_else(|_| "admin-token-dev".to_string()),
+            foursquare_api_key: env::var("FOURSQUARE_API_KEY").unwrap_or_else(|_| String::new()),
 
             db_max_connections: env::var("DB_MAX_CONNECTIONS")
                 .unwrap_or_else(|_| "20".to_string())
@@ -89,6 +89,10 @@ impl Config {
 
         if self.google_places_api_key.is_empty() {
             log::warn!("GOOGLE_PLACES_API_KEY not configured - sync will not work");
+        }
+
+        if self.foursquare_api_key.is_empty() {
+            log::warn!("FOURSQUARE_API_KEY not configured - Foursquare enrichment will be disabled");
         }
 
         Ok(())
